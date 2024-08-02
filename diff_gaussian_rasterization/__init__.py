@@ -100,7 +100,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.num_buckets = num_buckets
-        ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, geomBuffer, binningBuffer, imgBuffer, sampleBuffer)
+        ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, opacities, geomBuffer, binningBuffer, imgBuffer, sampleBuffer)
         return color, radii
 
     @staticmethod
@@ -110,13 +110,14 @@ class _RasterizeGaussians(torch.autograd.Function):
         num_rendered = ctx.num_rendered
         num_buckets = ctx.num_buckets
         raster_settings = ctx.raster_settings
-        colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = ctx.saved_tensors
+        colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, dc, sh, opacities, geomBuffer, binningBuffer, imgBuffer, sampleBuffer = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
                 means3D, 
                 radii, 
                 colors_precomp, 
+                opacities,
                 scales, 
                 rotations, 
                 raster_settings.scale_modifier, 
@@ -260,4 +261,4 @@ class SparseGaussianAdam(torch.optim.Adam):
             exp_avg = stored_state["exp_avg"]
             exp_avg_sq = stored_state["exp_avg_sq"]
             M = param.numel() // N
-            _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)
+            _C.adamUpdate(param, param.grad, exp_avg, exp_avg_sq, visibility, lr, 0.9, 0.999, eps, N, M)

@@ -44,6 +44,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& means3D,
 	const torch::Tensor& radii,
     const torch::Tensor& colors,
+	const torch::Tensor& opacities,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -99,4 +100,4 @@ fusedssim_backward(
     torch::Tensor &img1,
     torch::Tensor &img2,
     torch::Tensor &dL_dmap
-);
+);
