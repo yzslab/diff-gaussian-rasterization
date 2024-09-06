@@ -173,7 +173,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -216,10 +217,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	cov.x += h_var;
 	cov.z += h_var;
 	const float det_cov_plus_h_cov = cov.x * cov.z - cov.y * cov.y;
+	float h_convolution_scaling = 1.0f;
 
-#ifdef DGR_FIX_AA
-	const float h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
-#endif 
+	if(antialiasing)
+		h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
 
 	// Invert covariance (EWA algorithm)
 	const float det = det_cov_plus_h_cov;
@@ -260,11 +261,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	float opacity = opacities[idx];
 
-#ifdef DGR_FIX_AA
+
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity * h_convolution_scaling };
-#else
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity };
-#endif
+
 
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
@@ -451,7 +450,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* conic_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	bool antialiasing)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -478,6 +478,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		conic_opacity,
 		grid,
 		tiles_touched,
-		prefiltered
+		prefiltered,
+		antialiasing
 		);
 }
