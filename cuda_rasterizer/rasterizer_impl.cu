@@ -220,6 +220,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	bool antialiasing,
 	int* radii,
 	int* rects,
 	float* boxmin,
@@ -286,7 +287,8 @@ int CudaRasterizer::Rasterizer::forward(
 		prefiltered,
 		(int2*)rects,
 		minn,
-		maxx
+		maxx,
+		antialiasing
 	);
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
@@ -365,6 +367,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* means3D,
 	const float* shs,
 	const float* colors_precomp,
+	const float* opacities,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -386,7 +389,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dcov3D,
 	float* dL_dsh,
 	float* dL_dscale,
-	float* dL_drot)
+	float* dL_drot,
+	bool antialiasing)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
@@ -434,6 +438,7 @@ void CudaRasterizer::Rasterizer::backward(
 		radii,
 		shs,
 		geomState.clamped,
+		opacities,
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
@@ -445,10 +450,12 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,
+		dL_dopacity,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
 		dL_dsh,
 		(glm::vec3*)dL_dscale,
-		(glm::vec4*)dL_drot);
+		(glm::vec4*)dL_drot,
+		antialiasing);
 }

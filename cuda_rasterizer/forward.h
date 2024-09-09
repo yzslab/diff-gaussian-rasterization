@@ -48,7 +48,8 @@ namespace FORWARD
 		bool prefiltered,
 		int2* rects,
 		float3 boxmin,
-		float3 boxmax);
+		float3 boxmax,
+		bool antialiasing);
 
 	// Main rasterization method.
 	void render(

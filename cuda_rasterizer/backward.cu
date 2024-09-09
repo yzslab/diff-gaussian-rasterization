@@ -15,6 +15,9 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+__device__ __forceinline__ float sq(float x) { return x * x; }
+
+
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
@@ -148,9 +151,12 @@ __global__ void computeCov2DCUDA(int P,
 	const float h_x, float h_y,
 	const float tan_fovx, float tan_fovy,
 	const float* view_matrix,
+	const float* opacities,
 	const float* dL_dconics,
+	float* dL_dopacity,
 	float3* dL_dmeans,
-	float* dL_dcov)
+	float* dL_dcov,
+	bool antialiasing)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0))
@@ -194,12 +200,50 @@ __global__ void computeCov2DCUDA(int P,
 	glm::mat3 cov2D = glm::transpose(T) * glm::transpose(Vrk) * T;
 
 	// Use helper variables for 2D covariance entries. More compact.
-	float a = cov2D[0][0] += 0.3f;
+	float a = cov2D[0][0];
 	float b = cov2D[0][1];
-	float c = cov2D[1][1] += 0.3f;
+	float c = cov2D[1][1];
+
+	constexpr float h_var = 0.3f;
+	float d_inside_root = 0.f;
+	if(antialiasing)
+	{
+		const float det_cov = a * c - b * b;
+		a += h_var;
+		c += h_var;
+		const float det_cov_plus_h_cov = a * c - b * b;
+		const float h_convolution_scaling = sqrt(max(0.000025f, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+		const float dL_dopacity_v = dL_dopacity[idx];
+		const float d_h_convolution_scaling = dL_dopacity_v * opacities[idx];
+		dL_dopacity[idx] = dL_dopacity_v * h_convolution_scaling;
+		d_inside_root = (det_cov / det_cov_plus_h_cov) <= 0.000025f ? 0.f : d_h_convolution_scaling / (2 * h_convolution_scaling);
+	} 
+	else
+	{
+		a += h_var;
+		c += h_var;
+	}
+	
+	float dL_da = 0, dL_db = 0, dL_dc = 0;
+	if(antialiasing)
+	{
+		// https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdx
+		// https://www.wolframalpha.com/input?i=d+%28%28x*y+-+z%5E2%29%2F%28%28x%2Bw%29*%28y%2Bw%29+-+z%5E2%29%29+%2Fdz
+		const float x = a;
+		const float y = c;
+		const float z = b;
+		const float w = h_var;
+		const float denom_f = d_inside_root / sq(w * w + w * (x + y) + x * y - z * z);
+		const float dL_dx = w * (w * y + y * y + z * z) * denom_f;
+		const float dL_dy = w * (w * x + x * x + z * z) * denom_f;
+		const float dL_dz = -2.f * w * z * (w + x + y) * denom_f;
+		dL_da = dL_dx;
+		dL_db = dL_dy;
+		dL_dc = dL_dz;
+	}
+
 
 	float denom = a * c - b * b;
-	float dL_da = 0, dL_db = 0, dL_dc = 0;
 	float denom2inv = 1.0f / ((denom * denom) + 0.0000001f);
 
 	if (denom2inv != 0)
@@ -562,6 +606,7 @@ void BACKWARD::preprocess(
 	const int* radii,
 	const float* shs,
 	const bool* clamped,
+	const float* opacities,
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
@@ -573,12 +618,14 @@ void BACKWARD::preprocess(
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
 	const float* dL_dconic,
+	float* dL_dopacity,
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot)
+	glm::vec4* dL_drot,
+	bool antialiasing)
 {
 	// Propagate gradients for the path of 2D conic matrix computation. 
 	// Somewhat long, thus it is its own kernel rather than being part of 
@@ -594,9 +641,12 @@ void BACKWARD::preprocess(
 		tan_fovx,
 		tan_fovy,
 		viewmatrix,
+		opacities,
 		dL_dconic,
+		dL_dopacity,
 		(float3*)dL_dmean3D,
-		dL_dcov3D);
+		dL_dcov3D,
+		antialiasing);
 
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
