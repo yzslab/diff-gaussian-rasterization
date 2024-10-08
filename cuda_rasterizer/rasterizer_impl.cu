@@ -269,13 +269,14 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	obtain(chunk, img.accum_alpha, N, 128);
 	obtain(chunk, img.n_contrib, N, 128);
 	obtain(chunk, img.ranges, N, 128);
-	int* dummy;
-	int* wummy;
+	int* dummy = nullptr;
+	int* wummy = nullptr;
 	cub::DeviceScan::InclusiveSum(nullptr, img.scan_size, dummy, wummy, N);
 	obtain(chunk, img.contrib_scan, img.scan_size, 128);
 
 	obtain(chunk, img.max_contrib, N, 128);
-	obtain(chunk, img.pixel_colors, N * NUM_CHAFFELS, 128);
+	obtain(chunk, img.pixel_colors, N * NUM_CHANNELS_3DGS, 128);
+	obtain(chunk, img.pixel_invDepths, N, 128);
 	obtain(chunk, img.bucket_count, N, 128);
 	obtain(chunk, img.bucket_offsets, N, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, img.bucket_count_scan_size, img.bucket_count, img.bucket_count, N);
@@ -288,7 +289,8 @@ CudaRasterizer::SampleState CudaRasterizer::SampleState::fromChunk(char *& chunk
 	SampleState sample;
 	obtain(chunk, sample.bucket_to_tile, C * BLOCK_SIZE, 128);
 	obtain(chunk, sample.T, C * BLOCK_SIZE, 128);
-	obtain(chunk, sample.ar, NUM_CHAFFELS * C * BLOCK_SIZE, 128);
+	obtain(chunk, sample.ar, NUM_CHANNELS_3DGS * C * BLOCK_SIZE, 128);
+	obtain(chunk, sample.ard, C * BLOCK_SIZE, 128);
 	return sample;
 }
 
@@ -352,6 +354,7 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* invdepth,
 	int* radii,
 	bool debug)
 {
@@ -375,7 +378,7 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
-	if (NUM_CHAFFELS != 3 && colors_precomp == nullptr)
+	if (NUM_CHANNELS_3DGS != 3 && colors_precomp == nullptr)
 	{
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
@@ -474,7 +477,7 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 		imgState.ranges,
 		binningState.point_list,
 		imgState.bucket_offsets, sampleState.bucket_to_tile,
-		sampleState.T, sampleState.ar,
+		sampleState.T, sampleState.ar, sampleState.ard,
 		width, height,
 		geomState.means2D,
 		feature_ptr,
@@ -483,9 +486,12 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		imgState.max_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		geomState.depths,
+		invdepth), debug)
 
-	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHAFFELS, cudaMemcpyDeviceToDevice), debug);
+	CHECK_CUDA(cudaMemcpy(imgState.pixel_colors, out_color, sizeof(float) * width * height * NUM_CHANNELS_3DGS, cudaMemcpyDeviceToDevice), debug);
+	CHECK_CUDA(cudaMemcpy(imgState.pixel_invDepths, invdepth, sizeof(float) * width * height, cudaMemcpyDeviceToDevice), debug);
 	return std::make_tuple(num_rendered, bucket_sum);
 }
 
@@ -514,10 +520,12 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	char* sample_buffer,
 	const float* dL_dpix,
+	const float* dL_invdepths,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dopacity,
 	float* dL_dcolor,
+	float* dL_dinvdepth,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
 	float* dL_ddc,
@@ -556,19 +564,24 @@ void CudaRasterizer::Rasterizer::backward(
 		sampleState.bucket_to_tile,
 		sampleState.T,
 		sampleState.ar,
+		sampleState.ard,
 		background,
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		geomState.depths,
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		imgState.max_contrib,
 		imgState.pixel_colors,
+		imgState.pixel_invDepths,
 		dL_dpix,
+		dL_invdepths,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		dL_dinvdepth), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -592,6 +605,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(glm::vec3*)campos,
 		(float3*)dL_dmean2D,
 		dL_dconic,
+		dL_dinvdepth,
 		dL_dopacity,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,

@@ -282,7 +282,7 @@ renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	const uint32_t* __restrict__ per_tile_bucket_offset, uint32_t* __restrict__ bucket_to_tile,
-	float* __restrict__ sampled_T, float* __restrict__ sampled_ar,
+	float* __restrict__ sampled_T, float* __restrict__ sampled_ar, float* __restrict__ sampled_ard,
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
@@ -291,7 +291,9 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	uint32_t* __restrict__ max_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	const float* __restrict__ depths,
+	float* __restrict__ invdepth)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -334,6 +336,7 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	float expected_invdepth = 0.0f;
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -363,6 +366,7 @@ renderCUDA(
 				for (int ch = 0; ch < CHANNELS; ++ch) {
 					sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = C[ch];
 				}
+				sampled_ard[(bbm * BLOCK_SIZE) + block.thread_rank()] = expected_invdepth;
 				++bbm;
 			}
 
@@ -396,6 +400,8 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
+			expected_invdepth += (1.f / depths[collected_id[j]]) * alpha * T;
+
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -412,7 +418,7 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
-
+		invdepth[pix_id] = expected_invdepth;
 	}
 
 	// max reduce the last contributor
@@ -430,7 +436,7 @@ void FORWARD::render(
 	const uint2* ranges,
 	const uint32_t* point_list,
 	const uint32_t* per_tile_bucket_offset, uint32_t* bucket_to_tile,
-	float* sampled_T, float* sampled_ar,
+	float* sampled_T, float* sampled_ar, float* sampled_ard,
 	int W, int H,
 	const float2* means2D,
 	const float* colors,
@@ -439,13 +445,15 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	uint32_t* max_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	float* depths,
+	float* depth)
 {
-	renderCUDA<NUM_CHAFFELS> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS_3DGS> << <grid, block >> > (
 		ranges,
 		point_list,
 		per_tile_bucket_offset, bucket_to_tile,
-		sampled_T, sampled_ar,
+		sampled_T, sampled_ar, sampled_ard,
 		W, H,
 		means2D,
 		colors,
@@ -454,7 +462,9 @@ void FORWARD::render(
 		n_contrib,
 		max_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		depths,
+		depth);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -484,7 +494,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	preprocessCUDA<NUM_CHAFFELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS_3DGS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		scales,
