@@ -81,6 +81,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.sh_degree,
             raster_settings.campos,
             raster_settings.prefiltered,
+            raster_settings.antialiasing,
             raster_settings.debug
         )
 
@@ -138,6 +139,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 imgBuffer,
                 num_buckets,
                 sampleBuffer,
+		        raster_settings.antialiasing,
                 raster_settings.debug)
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -180,6 +182,7 @@ class GaussianRasterizationSettings(NamedTuple):
     campos : torch.Tensor
     prefiltered : bool
     debug : bool
+    antialiasing : bool
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
